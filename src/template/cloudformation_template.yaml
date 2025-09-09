@@ -133,9 +133,10 @@ Resources:
       EventPattern:
         source:
           - aws.securityhub
-#        detail-type:
-#          - Security Hub Findings - Custom Action
-#          - Security Hub Findings - Imported
+        detail-type:
+          - Security Hub Findings - Custom Action
+          - Security Hub Findings - Imported
+          - Findings Imported V2
 
       State: "ENABLED"
       Targets:

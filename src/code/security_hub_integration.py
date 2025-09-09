@@ -55,6 +55,8 @@ def is_automated_check(finding):
         return finding["GeneratorId"] in automated_controls["Controls"]["default"]
 
 def lambda_handler(event, context):  # Main function
+    print(event)
+
     utils.validate_environments(
         ["JIRA_API_TOKEN", "AWS_REGION"])
 

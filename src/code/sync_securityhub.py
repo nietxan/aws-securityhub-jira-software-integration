@@ -19,6 +19,8 @@ secretsmanager = boto3.client('secretsmanager')
 
 
 def lambda_handler(event, context):
+    print(event)
+
     utils.validate_environments(
         ["JIRA_API_TOKEN", "AWS_REGION"])
     

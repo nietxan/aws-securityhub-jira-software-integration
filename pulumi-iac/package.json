@@ -1,0 +1,19 @@
+{
+    "name": "aws-securityhub-jira-software-integration",
+    "version": "1.0.0",
+    "description": "A Pulumi program to deploy the AWS Security Hub to JIRA integration",
+    "main": "index.js",
+    "scripts": {
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+        "@pulumi/pulumi": "^3.0.0",
+        "@pulumi/aws": "^6.0.0"
+    },
+    "devDependencies": {
+        "typescript": "^4.0.0",
+        "@types/node": "^14.0.0"
+    }
+}

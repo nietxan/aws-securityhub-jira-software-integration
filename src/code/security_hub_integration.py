@@ -55,6 +55,14 @@ def is_automated_check(finding):
         return finding["GeneratorId"] in automated_controls["Controls"]["default"]
 
 def lambda_handler(event, context):  # Main function
+    print("####### Event ########")
+    print(event)
+    print("######################")
+    print("###### Context #######")
+    print(context)
+    print("######################")
+    exit(0)
+
     utils.validate_environments(
         ["JIRA_API_TOKEN", "AWS_REGION"])
 
@@ -109,7 +117,7 @@ def lambda_handler(event, context):  # Main function
                         utils.reopen_jira_issue(jira_client, jira_issue)
                         utils.update_securityhub(securityhub, finding_id, product_arn, "NOTIFIED",
                                                 'Reopening JIRA Ticket {0}'.format(jira_issue))
-                elif recordstate == "ACTIVE" and status == "NEW" and is_automated_check(finding):
+                elif recordstate == "ACTIVE" and status == "NEW":
                     # Check if in automatically list of findings to create automatically
                     jira_client=utils.get_jira_client(secretsmanager,jira_instance,jira_credentials)
                     jira_issue=utils.get_jira_finding(

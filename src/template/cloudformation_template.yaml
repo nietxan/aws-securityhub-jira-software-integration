@@ -133,9 +133,10 @@ Resources:
       EventPattern:
         source:
           - aws.securityhub
-        detail-type:
-          - Security Hub Findings - Custom Action
-          - Security Hub Findings - Imported
+#        detail-type:
+#          - Security Hub Findings - Custom Action
+#          - Security Hub Findings - Imported
+
       State: "ENABLED"
       Targets:
         - Arn: !GetAtt JIRASecHubFunction.Arn
@@ -169,7 +170,7 @@ Resources:
         Fn::GetAtt:
           - LambdaImportRole
           - Arn
-      Runtime: python3.11
+      Runtime: python3.12
       Timeout: 300
       Code: ../../dist/lambda.zip
       Environment:
@@ -216,7 +217,7 @@ Resources:
         Fn::GetAtt:
           - LambdaRefreshRole
           - Arn
-      Runtime: python3.11
+      Runtime: python3.12
       Timeout: 300
       Code: ../../dist/lambda.zip
       Environment:

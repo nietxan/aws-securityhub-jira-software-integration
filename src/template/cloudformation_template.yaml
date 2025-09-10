@@ -137,7 +137,6 @@ Resources:
           - Security Hub Findings - Custom Action
           - Security Hub Findings - Imported
           - Findings Imported V2
-
       State: "ENABLED"
       Targets:
         - Arn: !GetAtt JIRASecHubFunction.Arn

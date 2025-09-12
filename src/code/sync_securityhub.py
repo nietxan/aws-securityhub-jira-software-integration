@@ -2,7 +2,7 @@ import logging
 import sys
 import os
 import boto3
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 from jira import JIRA
 import utils
 

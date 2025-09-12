@@ -6,7 +6,7 @@ import sys
 from jira import JIRA
 import utils
 from datetime import datetime, timezone
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 
 # set global logger
 logger = logging.getLogger(__name__)

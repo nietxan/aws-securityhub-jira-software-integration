@@ -7,7 +7,7 @@ import boto3
 import json
 from jira import JIRA, JIRAError
 from botocore.exceptions import ClientError
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 import jira
 
 logger = logging.getLogger('')

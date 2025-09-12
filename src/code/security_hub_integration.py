@@ -6,6 +6,7 @@ import sys
 from jira import JIRA
 import utils
 from datetime import datetime, timezone
+from typing import Optional, List, Any
 
 # set global logger
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ class FindingData:
     """Data class to hold finding information in a structured way."""
 
     def __init__(self, account: str, description: str, severity: str, title: str, 
-                 finding_id: str, product_arn: str, resources: list[str],
+                 finding_id: str, product_arn: str, resources: List[str],
                  status: str, record_state: str, region: str = None):
         self.account = account
         self.description = description
@@ -34,7 +35,7 @@ class FindingData:
         self.region = region
 
 
-def parse_legacy_finding(finding: dict[str, Any]) -> FindingData:
+def parse_legacy_finding(finding: Dict[str, Any]) -> FindingData:
     """Parse legacy Security Hub finding format."""
     account = finding["AwsAccountId"]
     description = finding["Description"]
@@ -50,7 +51,7 @@ def parse_legacy_finding(finding: dict[str, Any]) -> FindingData:
                        product_arn, resources, status, record_state)
 
 
-def parse_new_finding(finding: dict[str, Any], region: str) -> FindingData:
+def parse_new_finding(finding: Dict[str, Any], region: str) -> FindingData:
     """Parse new Security Hub EventBridge finding format (Findings Imported V2)."""
     # Extract account from cloud.account.uid
     account = finding.get("cloud", {}).get("account", {}).get("uid", "unknown")
@@ -91,7 +92,7 @@ def parse_new_finding(finding: dict[str, Any], region: str) -> FindingData:
     return FindingData(account, description, severity, title, finding_id, product_arn, resources, status, record_state, region)
 
 
-def finding_parser(finding: dict[str, Any], region: str = None) -> FindingData:
+def finding_parser(finding: Dict[str, Any], region: str = None) -> FindingData:
     """
     Parse finding from either legacy or new Security Hub event format.
 
@@ -189,7 +190,7 @@ def should_auto_create_ticket(finding_data: FindingData) -> bool:
             finding_data.finding_id != "unknown")
 
 
-def process_custom_action_event(event: dict[str, Any], finding_data: FindingData, 
+def process_custom_action_event(event: Dict[str, Any], finding_data: FindingData, 
                                 jira_client: JIRA, project_key: str, issuetype_name: str) -> None:
     """Process Security Hub Findings - Custom Action events."""
     action_name = event["detail"].get("actionName")
@@ -212,7 +213,7 @@ def process_custom_action_event(event: dict[str, Any], finding_data: FindingData
         logger.warning(f"Unknown custom action: {action_name}")
 
 
-def process_imported_event(event: dict[str, Any], finding_data: FindingData, 
+def process_imported_event(event: Dict[str, Any], finding_data: FindingData, 
                            jira_client: JIRA, project_key: str, issuetype_name: str) -> None:
     """Process Security Hub Findings - Imported events."""
     if finding_data.record_state == "ARCHIVED" and finding_data.status == "NOTIFIED":
@@ -248,7 +249,7 @@ def process_imported_event(event: dict[str, Any], finding_data: FindingData,
         logger.info(f"Not performing any action for {finding_data.finding_id}")
 
 
-def process_findings_imported_v2_event(event: dict[str, Any], finding_data: FindingData, 
+def process_findings_imported_v2_event(event: Dict[str, Any], finding_data: FindingData, 
                                        jira_client: JIRA, project_key: str, issuetype_name: str) -> None:
     """Process new Findings Imported V2 events from EventBridge."""
     # For new format, we primarily handle NEW findings by auto-creating tickets
@@ -265,7 +266,7 @@ def process_findings_imported_v2_event(event: dict[str, Any], finding_data: Find
         logger.info(f"Not creating ticket for finding {finding_data.finding_id} - status: {finding_data.status}, record_state: {finding_data.record_state}")
 
 
-def lambda_handler(event: dict[str, Any], context: Any) -> None:
+def lambda_handler(event: Dict[str, Any], context: Any) -> None:
     """
     Main Lambda handler function.
 

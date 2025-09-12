@@ -7,6 +7,7 @@ import boto3
 import json
 from jira import JIRA, JIRAError
 from botocore.exceptions import ClientError
+from typing import Optional, List, Any
 import jira
 
 logger = logging.getLogger('')
@@ -160,7 +161,7 @@ def get_jira_issue_by_title(jira_client, project_key, issuetype_name, title):
 
 
 def add_label_if_missing(jira_client, issue, label):
-    labels = list(issue.fields.labels or [])
+    labels = List(issue.fields.labels or [])
     if label not in labels:
         labels.append(label)
         issue.update(fields={"labels": labels})

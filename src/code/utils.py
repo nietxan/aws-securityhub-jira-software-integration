@@ -131,6 +131,12 @@ def get_finding_digest(finding_id):
     return one_way_digest
 
 
+def get_title_digest(title):
+    m = hashlib.md5()  # nosec
+    m.update(title.strip().lower().encode("utf-8"))
+    return m.hexdigest()
+
+
 def get_jira_finding(jira_client, finding_id,project_key, issuetype_name):
     digest = get_finding_digest(finding_id)
     created_before = jira_client.search_issues(
@@ -143,9 +149,27 @@ def get_jira_latest_updated_findings(jira_client,project_key, issuetype_name):
     return jira_client.search_issues('Project = {0} AND issuetype = "{1}" AND updated  >= -2w'.format(project_key, issuetype_name), maxResults=False)
 
 
+def get_jira_issue_by_title(jira_client, project_key, issuetype_name, title):
+    """
+    Find an existing JIRA issue by normalized title label to enable grouping.
+    """
+    title_digest = get_title_digest(title)
+    jql = 'Project = {0} AND issuetype = "{1}" AND labels = aws-sec-title-{2}'.format(project_key, issuetype_name, title_digest)
+    issues = jira_client.search_issues(jql)
+    return issues[0] if len(issues) > 0 else None
+
+
+def add_label_if_missing(jira_client, issue, label):
+    labels = list(issue.fields.labels or [])
+    if label not in labels:
+        labels.append(label)
+        issue.update(fields={"labels": labels})
+
+
 # creates ticket based on the Security Hub finding
 def create_ticket(jira_client, project_key, issuetype_name, account, region, description, resources, severity, title, id):
     digest = get_finding_digest(id)
+    title_digest = get_title_digest(title)
 
     finding_link = "https://{0}.console.aws.amazon.com/securityhub/home?region={0}#/findings?search=Id%3D%255Coperator%255C%253AEQUALS%255C%253A{1}".format(
             region, id)
@@ -153,7 +177,7 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
             "project": {"key": project_key},
             "issuetype": {"name": issuetype_name},  
             "summary": "AWS Security Issue :: {} :: {} :: {}".format(account, region, title),
-            "labels": ["aws-sec-%s" % digest],
+            "labels": ["aws-sec-%s" % digest, "aws-sec-title-%s" % title_digest],
             "priority": {"name": severity.capitalize()},
             "description": """ *What is the problem?*
             We detected a security finding within the AWS account {} you are responsible for.
@@ -176,6 +200,26 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
     new_issue = jira_client.create_issue(
             fields=issue_dict)  # writes dict to jira
     return new_issue
+
+
+def comment_with_new_resources(jira_client, issue, account, region, description, resources, severity, title, finding_id):
+    """
+    Add a comment to an existing grouped ticket noting newly affected resources and link.
+    """
+    finding_link = "https://{0}.console.aws.amazon.com/securityhub/home?region={0}#/findings?search=Id%3D%255Coperator%255C%253AEQUALS%255C%253A{1}".format(
+            region, finding_id)
+    resources_str = resources if isinstance(resources, str) else ", ".join(resources or [])
+    comment = (
+        "New occurrence of Security Hub finding detected.\n"
+        "Title: {0}\n"
+        "Severity: {1}\n"
+        "Resources: {2}\n"
+        "Description: {3}\n\n"
+        "[Link to Security Hub finding|{4}]"
+    ).format(title, severity, resources_str, description, finding_link)
+    jira_client.add_comment(issue, comment)
+    # ensure title label exists
+    add_label_if_missing(jira_client, issue, "aws-sec-title-%s" % get_title_digest(title))
 
 
 def update_securityhub(securityhub_client, id, product_arn, status, note):

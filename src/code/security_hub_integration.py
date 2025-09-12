@@ -125,6 +125,33 @@ def create_jira_ticket(jira_client: JIRA, project_key: str, issuetype_name: str,
     Returns:
         JIRA issue key
     """
+    # Group by title: if an issue with the same title label exists, comment instead of creating a duplicate
+    existing_issue = utils.get_jira_issue_by_title(jira_client, project_key, issuetype_name, finding_data.title)
+
+    if existing_issue:
+        utils.comment_with_new_resources(
+            jira_client,
+            existing_issue,
+            finding_data.account,
+            finding_data.region or os.environ['AWS_REGION'],
+            finding_data.description,
+            finding_data.resources,
+            finding_data.severity,
+            finding_data.title,
+            finding_data.finding_id,
+        )
+
+        utils.update_securityhub(
+                securityhub, finding_data.finding_id, finding_data.product_arn,
+                "NOTIFIED", f'JIRA Ticket (grouped): {existing_issue}')
+
+        try:
+            utils.update_jira_assignee(jira_client, existing_issue, finding_data.account)
+        except Exception:
+            logger.debug("Assignee update skipped for grouped issue")
+
+        return str(existing_issue)
+
     resources_str = "Resources: %s" % finding_data.resources if not "default" in finding_data.product_arn else ""
 
     new_issue = utils.create_ticket(
@@ -152,8 +179,12 @@ def should_auto_create_ticket(finding_data: FindingData) -> bool:
     Returns:
         True if ticket should be auto-created, False otherwise
     """
-    # Auto-create tickets for all findings that are NEW and ACTIVE
-    return (finding_data.status == "NEW" and 
+    # Only proceed for HIGH and CRITICAL severities
+    sev = str(finding_data.severity).lower()
+    is_severe = sev in ["high", "critical"]
+    # Auto-create tickets for severe findings that are NEW and ACTIVE
+    return (is_severe and
+            finding_data.status == "NEW" and 
             finding_data.record_state == "ACTIVE" and
             finding_data.finding_id != "unknown")
 
@@ -268,6 +299,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> None:
                 # Parse finding data
                 finding_data = finding_parser(finding, region)
                 logger.info(f"Processing finding: {finding_data.finding_id} - {finding_data.title}")
+
+                # Filter by severity: only HIGH and CRITICAL
+                sev = str(finding_data.severity).lower()
+                if sev not in ["high", "critical"]:
+                    logger.info(f"Skipping non-severe finding {finding_data.finding_id} with severity {finding_data.severity}")
+                    continue
 
                 # Route to appropriate handler based on event type
                 detail_type = event.get("detail-type")

@@ -125,22 +125,47 @@ Resources:
                 Resource:
                   - !Ref JIRAAPITokenSecret
 
-  JIRASecHubCWRule:
+  JIRASecHubCWRuleLegacy:
     Type: AWS::Events::Rule
     Properties:
-      Description: This CW rule helps keep Security Hub in sync with JIRA updates
-      Name: !Sub securityhub-change-status-${Environment}
+      Description: This rule routes only HIGH/CRITICAL legacy Security Hub findings to Lambda
+      Name: !Sub securityhub-change-status-legacy-${Environment}
       EventPattern:
         source:
           - aws.securityhub
         detail-type:
           - Security Hub Findings - Custom Action
           - Security Hub Findings - Imported
-          - Findings Imported V2
+        detail:
+          findings:
+            Severity:
+              Label:
+                - HIGH
+                - CRITICAL
       State: "ENABLED"
       Targets:
         - Arn: !GetAtt JIRASecHubFunction.Arn
-          Id: "TargetFunctionV1"
+          Id: "TargetFunctionLegacy"
+
+  JIRASecHubCWRuleV2:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: This rule routes only High/Critical Findings Imported V2 to Lambda
+      Name: !Sub securityhub-change-status-v2-${Environment}
+      EventPattern:
+        source:
+          - aws.securityhub
+        detail-type:
+          - Findings Imported V2
+        detail:
+          findings:
+            severity:
+              - High
+              - Critical
+      State: "ENABLED"
+      Targets:
+        - Arn: !GetAtt JIRASecHubFunction.Arn
+          Id: "TargetFunctionV2"
 
   JIRAAPITokenSecret:
     Type: "AWS::SecretsManager::Secret"
@@ -148,7 +173,7 @@ Resources:
       Name: !Sub JiraAPIToken-${Environment}
       Description: "JIRA API Token"
 
-  PermissionForEventsToInvokeIntegrationLambda:
+  PermissionForEventsToInvokeIntegrationLambdaLegacy:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName:
@@ -157,7 +182,19 @@ Resources:
       Principal: "events.amazonaws.com"
       SourceArn:
         Fn::GetAtt:
-          - "JIRASecHubCWRule"
+          - "JIRASecHubCWRuleLegacy"
+          - "Arn"
+
+  PermissionForEventsToInvokeIntegrationLambdaV2:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Ref: "JIRASecHubFunction"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn:
+        Fn::GetAtt:
+          - "JIRASecHubCWRuleV2"
           - "Arn"
 
   JIRASecHubFunction:

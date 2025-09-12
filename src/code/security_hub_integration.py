@@ -129,12 +129,12 @@ def create_jira_ticket(jira_client: JIRA, project_key: str, issuetype_name: str,
     resources_str = "Resources: %s" % finding_data.resources if not "default" in finding_data.product_arn else ""
 
     new_issue = utils.create_ticket(
-            jira_client, project_key, issuetype_name, finding_data.account, 
-            finding_data.region or os.environ['AWS_REGION'], finding_data.description, 
+            jira_client, project_key, issuetype_name, finding_data.account,
+            finding_data.region or os.environ['AWS_REGION'], finding_data.description,
             resources_str, finding_data.severity, finding_data.title, finding_data.finding_id)
 
     utils.update_securityhub(
-            securityhub, finding_data.finding_id, finding_data.product_arn, 
+            securityhub, finding_data.finding_id, finding_data.product_arn,
             "NOTIFIED", f'JIRA Ticket: {new_issue}')
 
     utils.update_jira_assignee(jira_client, new_issue, finding_data.account)
@@ -157,6 +157,7 @@ def should_auto_create_ticket(finding_data: FindingData) -> bool:
     return (finding_data.status == "NEW" and 
             finding_data.record_state == "ACTIVE" and
             finding_data.finding_id != "unknown")
+
 
 def process_custom_action_event(event: Dict[str, Any], finding_data: FindingData, 
                                 jira_client: JIRA, project_key: str, issuetype_name: str) -> None:

@@ -56,15 +56,15 @@ def sync_finding_with_jira(jira_client: JIRA, ticket: Any, project_key: str,
                     securityhub, finding_id, product_arn, "SUPPRESSED", f'JIRA Ticket: {ticket}')
 
         # Handle closed findings
-    elif utils.is_closed(jira_client, ticket) and finding_status != "RESOLVED":
-        logger.info(f"Marking as resolved {finding_id} based on {ticket}")
-            utils.update_securityhub(
+        elif utils.is_closed(jira_client, ticket) and finding_status != "RESOLVED":
+            logger.info(f"Marking as resolved {finding_id} based on {ticket}")
+                utils.update_securityhub(
                     securityhub, finding_id, product_arn, "RESOLVED", 'JIRA Ticket was resolved')
 
         # Handle active findings that are not closed or suppressed
-    elif not utils.is_closed(jira_client, ticket) and not utils.is_suppressed(jira_client, ticket):
-        if record_state != "ARCHIVED" and finding_status != "NOTIFIED":
-            # Reopen if Security Hub finding is still ACTIVE but not NOTIFIED
+        elif not utils.is_closed(jira_client, ticket) and not utils.is_suppressed(jira_client, ticket):
+            if record_state != "ARCHIVED" and finding_status != "NOTIFIED":
+                # Reopen if Security Hub finding is still ACTIVE but not NOTIFIED
                 logger.info(f"Reopen {finding_id} based on {ticket}")
                 utils.update_securityhub(
                         securityhub, finding_id, product_arn, "NOTIFIED", f'JIRA Ticket: {ticket}')

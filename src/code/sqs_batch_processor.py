@@ -34,13 +34,23 @@ def drain_messages(queue_url: str, max_batches: int = 30):
         messages = resp.get('Messages', [])
         if not messages:
             break
+        logger.info("Drained batch %s with %s messages", batches + 1, len(messages))
         yield messages
         batches += 1
 
 
 def process_record(jira_client: JIRA, record: dict, project_key: str, issuetype_name: str):
     # Use utils.create_ticket with parent/subtask grouping
-    resources_str = "Resources: %s" % record.get('resources', [])
+    resources = record.get('resources', [])
+    resources_str = "Resources: %s" % resources
+    title = record.get('title') or ""
+    title_parts = title.split(' - ', 1)
+    cve = title_parts[0].strip() if len(title_parts) > 0 else "UNKNOWN"
+    short_title = title_parts[1].strip() if len(title_parts) > 1 else title
+    logger.info(
+        "Processing record: finding_id=%s account=%s severity=%s title='%s' short_title='%s' cve='%s' resources=%s",
+        record.get('finding_id'), record.get('account'), record.get('severity'), title, short_title, cve, len(resources)
+    )
     utils.create_ticket(
         jira_client,
         project_key,
@@ -50,7 +60,7 @@ def process_record(jira_client: JIRA, record: dict, project_key: str, issuetype_
         record.get('description'),
         resources_str,
         record.get('severity'),
-        record.get('title'),
+        title,
         record.get('finding_id'),
     )
 
@@ -64,9 +74,14 @@ def lambda_handler(event, context):
     project_key = os.environ['JIRA_PROJECT_KEY']
     issuetype_name = os.environ['JIRA_ISSUETYPE']
 
+    logger.info("Batch processor start: queue=%s project=%s issuetype=%s", queue_url, project_key, issuetype_name)
     jira_client = utils.get_jira_client(secretsmanager, jira_instance, jira_credentials)
 
     attempt = 0
+    total_processed = 0
+    total_deleted = 0
+    total_retried = 0
+    total_dropped = 0
     for messages in drain_messages(queue_url):
         entries_to_delete = []
         for m in messages:
@@ -77,6 +92,7 @@ def lambda_handler(event, context):
                     'Id': m['MessageId'],
                     'ReceiptHandle': m['ReceiptHandle']
                 })
+                total_deleted += 1
             except JIRAError as je:
                 status = getattr(je, 'status_code', None)
                 retry_after = None
@@ -85,21 +101,32 @@ def lambda_handler(event, context):
                 except Exception:
                     pass
                 if status == 429 or status == 503:
-                    logger.warning(f"JIRA rate limit/availability error, backing off: {je}")
+                    logger.warning("JIRA rate limit/availability error for message %s, backing off: %s", m.get('MessageId'), je)
                     backoff_sleep(attempt, retry_after)
                     attempt += 1
                     # do not delete; message will be retried
+                    total_retried += 1
                 else:
-                    logger.error(f"Permanent JIRA error, dropping message: {je}")
+                    logger.error("Permanent JIRA error for message %s, dropping: %s", m.get('MessageId'), je)
                     entries_to_delete.append({
                         'Id': m['MessageId'],
                         'ReceiptHandle': m['ReceiptHandle']
                     })
+                    total_dropped += 1
             except Exception as e:
-                logger.error(f"Unexpected error processing message: {e}", exc_info=True)
+                logger.error("Unexpected error processing message %s: %s", m.get('MessageId'), e, exc_info=True)
                 # leave message for retry
+                total_retried += 1
+            finally:
+                total_processed += 1
 
         if entries_to_delete:
             sqs.delete_message_batch(QueueUrl=queue_url, Entries=entries_to_delete)
+            logger.info("Deleted %s messages from SQS", len(entries_to_delete))
+
+    logger.info(
+        "Batch processor summary: processed=%s deleted=%s retried=%s dropped=%s attempts=%s",
+        total_processed, total_deleted, total_retried, total_dropped, attempt
+    )
 
 

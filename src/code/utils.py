@@ -194,6 +194,30 @@ def add_label_if_missing(jira_client, issue, label):
         issue.update(fields={"labels": labels})
 
 
+def map_severity_to_priority_name(severity: str) -> str:
+    """
+    Map incoming SecurityHub/Inspector severity to a valid JIRA priority name.
+    Allows overrides via env vars; falls back to sensible defaults.
+    """
+    sev = (severity or "").strip().lower()
+    # Environment overrides
+    critical = os.environ.get("JIRA_PRIORITY_CRITICAL", "Highest")
+    high = os.environ.get("JIRA_PRIORITY_HIGH", "High")
+    medium = os.environ.get("JIRA_PRIORITY_MEDIUM", "Medium")
+    low = os.environ.get("JIRA_PRIORITY_LOW", "Low")
+    default_p = os.environ.get("JIRA_PRIORITY_DEFAULT", high)
+
+    if sev == "critical":
+        return critical
+    if sev == "high":
+        return high
+    if sev == "medium":
+        return medium
+    if sev == "low":
+        return low
+    return default_p
+
+
 def get_existing_cve_subtask(jira_client, parent_issue, cve, account):
     """
     Check if a CVE subtask already exists for the given CVE and account under the parent issue.
@@ -264,7 +288,7 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                     "parent": {"key": str(parent_issue)},
                     "summary": "CVE: {} - Account: {}".format(cve, account),
                     "labels": ["cve", "cve-{}".format(cve.lower()), "account-{}".format(account), "severity-{}".format(severity.lower())],
-                    "priority": {"name": severity.capitalize()},
+                    "priority": {"name": map_severity_to_priority_name(severity)},
                     "description": """ *CVE Details*
                     CVE: {}
                     Account: {}
@@ -275,7 +299,12 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                     [Link to Security Hub finding|{}]
                     """.format(cve, account, resources, description, finding_link)
                 }
-                subtask = jira_client.create_issue(fields=subtask_dict)
+                try:
+                    subtask = jira_client.create_issue(fields=subtask_dict)
+                except JIRAError as je1:
+                    # Try alternative common subtask type spelling if configured instance uses it
+                    subtask_dict["issuetype"] = {"name": "Sub-task"}
+                    subtask = jira_client.create_issue(fields=subtask_dict)
                 logger.info("Successfully created CVE subtask {} for parent {}".format(subtask, parent_issue))
                 return str(subtask)
             except Exception as e:
@@ -290,7 +319,7 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
             "issuetype": {"name": issuetype_name},  
             "summary": "{} - Security Finding Group".format(short_description),
             "labels": ["security-finding", "title-{}".format(title_digest), "grouped-finding"],
-            "priority": {"name": severity.capitalize()},
+            "priority": {"name": map_severity_to_priority_name(severity)},
             "description": """ *Security Finding Group*
             This is a grouped issue for the security finding: {}
             
@@ -309,7 +338,7 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                 "parent": {"key": str(parent_issue)},
                 "summary": "CVE: {} - Account: {}".format(cve, account),
                 "labels": ["cve", "cve-{}".format(cve.lower()), "account-{}".format(account), "severity-{}".format(severity.lower())],
-                "priority": {"name": severity.capitalize()},
+                "priority": {"name": map_severity_to_priority_name(severity)},
                 "description": """ *CVE Details*
                 CVE: {}
                 Account: {}
@@ -320,7 +349,11 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                 [Link to Security Hub finding|{}]
                 """.format(cve, account, resources, description, finding_link)
             }
-            subtask = jira_client.create_issue(fields=subtask_dict)
+            try:
+                subtask = jira_client.create_issue(fields=subtask_dict)
+            except JIRAError as je2:
+                subtask_dict["issuetype"] = {"name": "Sub-task"}
+                subtask = jira_client.create_issue(fields=subtask_dict)
             logger.info("Successfully created CVE subtask {} for new parent {}".format(subtask, parent_issue))
             return str(subtask)
         except Exception as e:

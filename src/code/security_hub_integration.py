@@ -307,11 +307,16 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> None:
                 }
 
                 try:
-                    sqs.send_message(
-                        QueueUrl=queue_url,
-                        MessageBody=json.dumps(message_body),
-                        MessageGroupId=finding_data.title if queue_url.endswith('.fifo') else None
-                    )
+                    params = {
+                        'QueueUrl': queue_url,
+                        'MessageBody': json.dumps(message_body),
+                    }
+                    if queue_url.endswith('.fifo'):
+                        # Group by normalized title, dedupe by finding id
+                        params['MessageGroupId'] = utils.get_title_digest(finding_data.title)
+                        params['MessageDeduplicationId'] = utils.get_finding_digest(finding_data.finding_id)
+
+                    sqs.send_message(**params)
                     logger.info(f"Enqueued finding {finding_data.finding_id} for batch processing")
                 except Exception as e:
                     logger.error(f"Failed to enqueue finding {finding_data.finding_id}: {e}")

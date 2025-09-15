@@ -141,7 +141,7 @@ def get_title_digest(title):
 def get_jira_finding(jira_client, finding_id,project_key, issuetype_name):
     digest = get_finding_digest(finding_id)
     created_before = jira_client.search_issues(
-            'Project = {0} AND issuetype = "{1}" AND (labels = aws-sec-{2})'.format(project_key, issuetype_name,digest))
+            'Project = {0} AND issuetype = "{1}" AND (labels = finding-{2})'.format(project_key, issuetype_name,digest))
     # Should only exist once
     return created_before[0] if len(created_before) > 0 else None
 
@@ -155,7 +155,7 @@ def get_jira_issue_by_title(jira_client, project_key, issuetype_name, title):
     Find an existing JIRA issue by normalized title label to enable grouping.
     """
     title_digest = get_title_digest(title)
-    jql = 'Project = {0} AND issuetype = "{1}" AND labels = aws-sec-title-{2}'.format(project_key, issuetype_name, title_digest)
+    jql = 'Project = {0} AND issuetype = "{1}" AND labels = title-{2}'.format(project_key, issuetype_name, title_digest)
     issues = jira_client.search_issues(jql)
     return issues[0] if len(issues) > 0 else None
 
@@ -171,35 +171,50 @@ def add_label_if_missing(jira_client, issue, label):
 def create_ticket(jira_client, project_key, issuetype_name, account, region, description, resources, severity, title, id):
     digest = get_finding_digest(id)
     title_digest = get_title_digest(title)
+    
+    # Split title by '-' to extract CVE and description
+    title_parts = title.split('-', 1)
+    cve = title_parts[0].strip() if len(title_parts) > 0 else "UNKNOWN"
+    short_description = title_parts[1].strip() if len(title_parts) > 1 else title
 
     finding_link = "https://{0}.console.aws.amazon.com/securityhub/home?region={0}#/findings?search=Id%3D%255Coperator%255C%253AEQUALS%255C%253A{1}".format(
             region, id)
+    
+    # Create main issue
     issue_dict = {
             "project": {"key": project_key},
             "issuetype": {"name": issuetype_name},  
-            "summary": "AWS Security Issue :: {} :: {} :: {}".format(account, region, title),
-            "labels": ["aws-sec-%s" % digest, "aws-sec-title-%s" % title_digest],
+            "summary": "{} - {} ({})".format(cve, short_description, account),
+            "labels": ["security-finding", "finding-{}".format(digest), "title-{}".format(title_digest), "account-{}".format(account), "severity-{}".format(severity.lower())],
             "priority": {"name": severity.capitalize()},
             "description": """ *What is the problem?*
-            We detected a security finding within the AWS account {} you are responsible for.
+            We detected a security finding within the AWS account {}.
             {}
 
             {}
 
             [Link to Security Hub finding|{}] 
-
-            *What do I need to do with the ticket?*
-            * Access the account and verify the configuration.
-            Acknowledge working on ticket by moving it to "Allocated for Fix".
-            Once fixed, moved to test fix so Security validates the issue is addressed.
-            * If you think risk should be accepted, move it to "Awaiting Risk acceptance".
-            This will require review by a Security engineer.
-            * If you think is a false positive, transition it to "Mark as False Positive".
-            This will get reviewed by a Security engineer and reopened/closed accordingly.
             """.format(account, resources, description, finding_link)
             }
     new_issue = jira_client.create_issue(
             fields=issue_dict)  # writes dict to jira
+    
+    # Create subtask for CVE if it looks like a CVE
+    if cve.upper().startswith('CVE-'):
+        try:
+            subtask_dict = {
+                "project": {"key": project_key},
+                "issuetype": {"name": "Sub-task"},
+                "parent": {"key": str(new_issue)},
+                "summary": "CVE: {}".format(cve),
+                "labels": ["cve", "cve-{}".format(cve.lower())],
+                "priority": {"name": severity.capitalize()},
+                "description": "CVE reference: {}".format(cve)
+            }
+            jira_client.create_issue(fields=subtask_dict)
+        except Exception as e:
+            logger.warning("Failed to create CVE subtask for {}: {}".format(cve, e))
+    
     return new_issue
 
 
@@ -210,17 +225,25 @@ def comment_with_new_resources(jira_client, issue, account, region, description,
     finding_link = "https://{0}.console.aws.amazon.com/securityhub/home?region={0}#/findings?search=Id%3D%255Coperator%255C%253AEQUALS%255C%253A{1}".format(
             region, finding_id)
     resources_str = resources if isinstance(resources, str) else ", ".join(resources or [])
+    
+    # Split title for better formatting
+    title_parts = title.split('-', 1)
+    cve = title_parts[0].strip() if len(title_parts) > 0 else "UNKNOWN"
+    short_description = title_parts[1].strip() if len(title_parts) > 1 else title
+    
     comment = (
         "New occurrence of Security Hub finding detected.\n"
-        "Title: {0}\n"
-        "Severity: {1}\n"
-        "Resources: {2}\n"
-        "Description: {3}\n\n"
-        "[Link to Security Hub finding|{4}]"
-    ).format(title, severity, resources_str, description, finding_link)
+        "CVE: {0}\n"
+        "Description: {1}\n"
+        "Severity: {2}\n"
+        "Account: {3}\n"
+        "Resources: {4}\n"
+        "Description: {5}\n\n"
+        "[Link to Security Hub finding|{6}]"
+    ).format(cve, short_description, severity, account, resources_str, description, finding_link)
     jira_client.add_comment(issue, comment)
     # ensure title label exists
-    add_label_if_missing(jira_client, issue, "aws-sec-title-%s" % get_title_digest(title))
+    add_label_if_missing(jira_client, issue, "title-%s" % get_title_digest(title))
 
 
 def update_securityhub(securityhub_client, id, product_arn, status, note):

@@ -2,6 +2,7 @@ import logging
 import json
 import os
 import boto3
+import json
 import sys
 from jira import JIRA
 import utils
@@ -15,6 +16,7 @@ logging.getLogger().addHandler(logging.StreamHandler())
 
 securityhub = boto3.client('securityhub')
 secretsmanager = boto3.client('secretsmanager')
+sqs = boto3.client('sqs')
 
 
 class FindingData:
@@ -285,17 +287,34 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> None:
                     logger.info(f"Skipping non-severe finding {finding_data.finding_id} with severity {finding_data.severity}")
                     continue
 
-                # Route to appropriate handler based on event type
-                detail_type = event.get("detail-type")
+                # Instead of direct processing, enqueue for batch processing via SQS
+                queue_url = os.environ.get('FINDINGS_QUEUE_URL')
+                if not queue_url:
+                    logger.error("FINDINGS_QUEUE_URL not set; skipping enqueue")
+                    continue
 
-                if detail_type == "Security Hub Findings - Custom Action":
-                    process_custom_action_event(event, finding_data, jira_client, project_key, issuetype_name)
-                elif detail_type == "Security Hub Findings - Imported":
-                    process_imported_event(event, finding_data, jira_client, project_key, issuetype_name)
-                elif detail_type == "Findings Imported V2":
-                    process_findings_imported_v2_event(event, finding_data, jira_client, project_key, issuetype_name)
-                else:
-                    logger.warning(f"Unknown event type: {detail_type}")
+                message_body = {
+                    "account": finding_data.account,
+                    "region": finding_data.region or os.environ['AWS_REGION'],
+                    "description": finding_data.description,
+                    "resources": finding_data.resources,
+                    "severity": finding_data.severity,
+                    "title": finding_data.title,
+                    "finding_id": finding_data.finding_id,
+                    "product_arn": finding_data.product_arn,
+                    "project_key": project_key,
+                    "issuetype_name": issuetype_name,
+                }
+
+                try:
+                    sqs.send_message(
+                        QueueUrl=queue_url,
+                        MessageBody=json.dumps(message_body),
+                        MessageGroupId=finding_data.title if queue_url.endswith('.fifo') else None
+                    )
+                    logger.info(f"Enqueued finding {finding_data.finding_id} for batch processing")
+                except Exception as e:
+                    logger.error(f"Failed to enqueue finding {finding_data.finding_id}: {e}")
 
             except UserWarning as e:
                 logger.error(f"User warning for finding {finding.get('finding_info', {}).get('uid', 'unknown')}: {e}")

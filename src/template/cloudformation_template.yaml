@@ -66,6 +66,12 @@ Resources:
                   - "*"
               - Effect: Allow
                 Action:
+                  - sqs:SendMessage
+                  - sqs:SendMessageBatch
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt FindingsQueue.Arn
+              - Effect: Allow
+                Action:
                   - "logs:CreateLogGroup"
                   - "logs:CreateLogStream"
                   - "logs:PutLogEvents"
@@ -220,6 +226,7 @@ Resources:
           JIRA_ISSUETYPE: !Ref JIRAIssueType
           JIRA_PROJECT_KEY: !Ref JIRAProjectKey
           JIRA_INSTANCE: !Ref JIRAInstance
+          FINDINGS_QUEUE_URL: !Ref FindingsQueue
 
   RefreshJIRASecHubCWRule:
     Type: AWS::Events::Rule
@@ -264,6 +271,131 @@ Resources:
           JIRA_ISSUETYPE: !Ref JIRAIssueType
           JIRA_PROJECT_KEY: !Ref JIRAProjectKey
 
+  FindingsQueueDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub securityhub-jira-findings-dlq-${Environment}
+      MessageRetentionPeriod: 1209600
+
+  FindingsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub securityhub-jira-findings-${Environment}
+      VisibilityTimeout: 900
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt FindingsQueueDLQ.Arn
+        maxReceiveCount: 5
+
+  QueueAccessPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref FindingsQueue
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action:
+              - sqs:SendMessage
+              - sqs:SendMessageBatch
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:DeleteMessageBatch
+              - sqs:GetQueueAttributes
+            Resource: !GetAtt FindingsQueue.Arn
+
+  BatchProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: "Lambda role for batch processing findings from SQS to JIRA"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub securityhub-jira-batch-${Environment}-${AWS::Region}
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:DeleteMessageBatch
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt FindingsQueue.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetResourcePolicy
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:ListSecretVersionIds
+                Resource:
+                  - !Ref JIRAAPITokenSecret
+
+  BatchProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub securityhub-jira-batch-${Environment}
+      Description: Drain SQS and create/update JIRA tickets with rate-limit backoff
+      Handler: "sqs_batch_processor.lambda_handler"
+      Role:
+        Fn::GetAtt:
+          - BatchProcessorRole
+          - Arn
+      Runtime: python3.12
+      Timeout: 900
+      Code: ../../dist/lambda.zip
+      Environment:
+        Variables:
+          JIRA_API_TOKEN: !Ref JIRAAPITokenSecret
+          JIRA_INSTANCE: !Ref JIRAInstance
+          JIRA_ISSUETYPE: !Ref JIRAIssueType
+          JIRA_PROJECT_KEY: !Ref JIRAProjectKey
+          FINDINGS_QUEUE_URL: !Ref FindingsQueue
+
+  BatchSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub securityhub-jira-batch-${Environment}
+      ScheduleExpression: "rate(30 minutes)"
+      FlexibleTimeWindow:
+        Mode: FLEXIBLE
+        MaximumWindowInMinutes: 5
+      Target:
+        Arn: !GetAtt BatchProcessorFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+
+  SchedulerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub securityhub-jira-scheduler-${Environment}
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt BatchProcessorFunction.Arn
   AlarmSNSTopic:
     Type: AWS::SNS::Topic
     Properties:

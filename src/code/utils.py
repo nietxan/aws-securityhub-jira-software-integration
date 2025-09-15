@@ -261,13 +261,33 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
     # IMPORTANT: compute title digest from the normalized short description (not full title)
     title_digest = get_title_digest(short_description)
 
-    finding_link = "https://{0}.console.aws.amazon.com/securityhub/home?region={0}#/findings?search=Id%3D%255Coperator%255C%253AEQUALS%255C%253A{1}".format(
-            region, id)
+    # Prefer plain FindingId reference rather than console link (more portable)
+    finding_id_text = id
     
     # Check if parent issue exists for this title
     parent_issue = get_jira_issue_by_title(jira_client, project_key, issuetype_name, short_description)
+    has_cve = cve.upper().startswith('CVE')
     
     if parent_issue:
+        # If the title does not include a CVE, attach details to the parent and return
+        if not has_cve:
+            try:
+                resources_str = resources if isinstance(resources, str) else ", ".join(resources or [])
+                comment = (
+                    "New occurrence (no CVE).\n"
+                    "Title: {0}\n"
+                    "Account: {1}\n"
+                    "Severity: {2}\n"
+                    "Resources: {3}\n\n"
+                    "Description: {4}\n"
+                    "FindingId: {5}"
+                ).format(short_description, account, severity, resources_str, description, finding_id_text)
+                jira_client.add_comment(parent_issue, comment)
+                add_label_if_missing(jira_client, parent_issue, "no-cve")
+                return str(parent_issue)
+            except Exception as e:
+                logger.error("Failed to update parent for no-CVE finding: %s", e, exc_info=True)
+                return str(parent_issue)
         # Parent exists - check if CVE subtask already exists
         logger.info("Found existing parent issue {} for title '{}', checking for existing CVE subtask".format(parent_issue, short_description))
         
@@ -296,8 +316,8 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                     
                     {}
                     
-                    [Link to Security Hub finding|{}]
-                    """.format(cve, account, resources, description, finding_link)
+                    FindingId: {}
+                    """.format(cve, account, resources, description, finding_id_text)
                 }
                 try:
                     subtask = jira_client.create_issue(fields=subtask_dict)
@@ -314,20 +334,43 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
         # No parent exists - create parent issue for this title
         logger.info("No parent issue found for title '{}', creating parent issue".format(short_description))
         
-        parent_dict = {
-            "project": {"key": project_key},
-            "issuetype": {"name": issuetype_name},  
-            "summary": "{} - Security Finding Group".format(short_description),
-            "labels": ["security-finding", "title-{}".format(title_digest), "grouped-finding"],
-            "priority": {"name": map_severity_to_priority_name(severity)},
-            "description": """ *Security Finding Group*
-            
-            Multiple CVEs may be associated with this finding type.
-            Check subtasks for specific CVE details and affected resources.
-            """
-        }
-        parent_issue = jira_client.create_issue(fields=parent_dict)
-        logger.info("Created parent issue {} for title '{}'".format(parent_issue, short_description))
+        if not has_cve:
+            # Create a standalone parent with all details when no CVE part is present
+            parent_dict = {
+                "project": {"key": project_key},
+                "issuetype": {"name": issuetype_name},  
+                "summary": "{} ({})".format(short_description, account),
+                "labels": ["security-finding", "title-{}".format(title_digest), "no-cve", "severity-{}".format((severity or '').lower())],
+                "priority": {"name": map_severity_to_priority_name(severity)},
+                "description": """ *Finding Details*
+                Title: {}
+                Account: {}
+                Severity: {}
+                Resources: {}
+                
+                {}
+                
+                FindingId: {}
+                """.format(short_description, account, severity, resources, description, finding_id_text)
+            }
+            parent_issue = jira_client.create_issue(fields=parent_dict)
+            logger.info("Created parent-only issue {} for title '{}' (no CVE)".format(parent_issue, short_description))
+            return str(parent_issue)
+        else:
+            parent_dict = {
+                "project": {"key": project_key},
+                "issuetype": {"name": issuetype_name},  
+                "summary": "{} - Security Finding Group".format(short_description),
+                "labels": ["security-finding", "title-{}".format(title_digest), "grouped-finding"],
+                "priority": {"name": map_severity_to_priority_name(severity)},
+                "description": """ *Security Finding Group*
+                
+                Multiple CVEs may be associated with this finding type.
+                Check subtasks for specific CVE details and affected resources.
+                """
+            }
+            parent_issue = jira_client.create_issue(fields=parent_dict)
+            logger.info("Created parent issue {} for title '{}'".format(parent_issue, short_description))
         
         # Now create the first CVE subtask
         try:
@@ -345,8 +388,8 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                 
                 {}
                 
-                [Link to Security Hub finding|{}]
-                """.format(cve, account, resources, description, finding_link)
+                FindingId: {}
+                """.format(cve, account, resources, description, finding_id_text)
             }
             try:
                 subtask = jira_client.create_issue(fields=subtask_dict)

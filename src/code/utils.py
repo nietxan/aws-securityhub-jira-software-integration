@@ -172,10 +172,12 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
     digest = get_finding_digest(id)
     title_digest = get_title_digest(title)
     
-    # Split title by '-' to extract CVE and description
-    title_parts = title.split('-', 1)
+    # Split title by ' - ' (with spaces) to extract CVE and description
+    logger.info("Original title: '{}'".format(title))
+    title_parts = title.split(' - ', 1)
     cve = title_parts[0].strip() if len(title_parts) > 0 else "UNKNOWN"
     short_description = title_parts[1].strip() if len(title_parts) > 1 else title
+    logger.info("Split result - CVE: '{}', Description: '{}'".format(cve, short_description))
 
     finding_link = "https://{0}.console.aws.amazon.com/securityhub/home?region={0}#/findings?search=Id%3D%255Coperator%255C%253AEQUALS%255C%253A{1}".format(
             region, id)
@@ -200,7 +202,8 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
             fields=issue_dict)  # writes dict to jira
     
     # Create subtask for CVE if it looks like a CVE
-    if cve.upper().startswith('CVE-'):
+    logger.info("Checking CVE: '{}' - starts with CVE: {}".format(cve, cve.upper().startswith('CVE')))
+    if cve.upper().startswith('CVE'):
         try:
             subtask_dict = {
                 "project": {"key": project_key},
@@ -211,9 +214,13 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                 "priority": {"name": severity.capitalize()},
                 "description": "CVE reference: {}".format(cve)
             }
-            jira_client.create_issue(fields=subtask_dict)
+            logger.info("Creating subtask with parent: {}".format(str(new_issue)))
+            subtask = jira_client.create_issue(fields=subtask_dict)
+            logger.info("Successfully created subtask: {}".format(subtask))
         except Exception as e:
-            logger.warning("Failed to create CVE subtask for {}: {}".format(cve, e))
+            logger.error("Failed to create CVE subtask for {}: {}".format(cve, e), exc_info=True)
+    else:
+        logger.info("Skipping subtask creation - CVE '{}' doesn't start with CVE-".format(cve))
     
     return new_issue
 
@@ -227,7 +234,7 @@ def comment_with_new_resources(jira_client, issue, account, region, description,
     resources_str = resources if isinstance(resources, str) else ", ".join(resources or [])
     
     # Split title for better formatting
-    title_parts = title.split('-', 1)
+    title_parts = title.split(' - ', 1)
     cve = title_parts[0].strip() if len(title_parts) > 0 else "UNKNOWN"
     short_description = title_parts[1].strip() if len(title_parts) > 1 else title
     

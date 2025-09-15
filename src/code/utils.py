@@ -443,22 +443,24 @@ def comment_with_new_resources(jira_client, issue, account, region, description,
 
 def update_securityhub(securityhub_client, id, product_arn, status, note):
     try:
-    response = securityhub_client.batch_update_findings(
+        response = securityhub_client.batch_update_findings(
             FindingIdentifiers=[
-                {'Id':  id,
-                 'ProductArn': product_arn
-                 }],
-            Workflow={'Status': status}, Note={
-                    'Text': note,
-                    'UpdatedBy': 'security-hub-integration'
-            })
-    if response.get('FailedFindings'):
-        for element in response['FailedFindings']:
-            logger.error("Update error - FindingId {0}".format(element["Id"]))
-            logger.error(
-                    "Update error - ErrorCode {0}".format(element["ErrorCode"]))
-            logger.error(
-                    "Update error - ErrorMessage {0}".format(element["ErrorMessage"]))
+                {
+                    'Id': id,
+                    'ProductArn': product_arn,
+                }
+            ],
+            Workflow={'Status': status},
+            Note={
+                'Text': note,
+                'UpdatedBy': 'security-hub-integration',
+            },
+        )
+        if response.get('FailedFindings'):
+            for element in response['FailedFindings']:
+                logger.error("Update error - FindingId {0}".format(element["Id"]))
+                logger.error("Update error - ErrorCode {0}".format(element["ErrorCode"]))
+                logger.error("Update error - ErrorMessage {0}".format(element["ErrorMessage"]))
         return response
     except ClientError as e:
         code = e.response.get('Error', {}).get('Code')
@@ -478,7 +480,7 @@ def is_closed(jira_client, issue):
 def reopen_jira_issue(jira_client, issue):
     """Reopen a closed JIRA issue."""
     try:
-    jira_client.transition_issue(issue, 'Reopen')
+        jira_client.transition_issue(issue, 'Reopen')
         logger.info("Reopened issue {}".format(issue))
     except Exception as e:
         logger.warning("Failed to reopen issue {}: {}".format(issue, e))

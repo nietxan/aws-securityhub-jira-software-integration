@@ -172,10 +172,18 @@ def get_jira_issue_by_title(jira_client, project_key, issuetype_name, title):
     # Extract the short description part (after CVE - )
     title_parts = title.split(' - ', 1)
     short_description = title_parts[1].strip() if len(title_parts) > 1 else title
-    
+
+    # First try by label digest
     title_digest = get_title_digest(short_description)
-    jql = 'Project = {0} AND issuetype = "{1}" AND labels = title-{2}'.format(project_key, issuetype_name, title_digest)
-    issues = jira_client.search_issues(jql)
+    jql_by_label = 'Project = {0} AND issuetype = "{1}" AND labels = title-{2}'.format(project_key, issuetype_name, title_digest)
+    issues = jira_client.search_issues(jql_by_label)
+    if len(issues) > 0:
+        return issues[0]
+
+    # Fallback: search by summary text to dedupe older parents created before label change
+    safe_summary = short_description.replace('"', '\\"')
+    jql_by_summary = 'Project = {0} AND issuetype = "{1}" AND summary ~ "{2}"'.format(project_key, issuetype_name, safe_summary)
+    issues = jira_client.search_issues(jql_by_summary)
     return issues[0] if len(issues) > 0 else None
 
 
@@ -222,11 +230,12 @@ def update_subtask_resources(jira_client, subtask, new_resources, finding_link):
 # creates ticket based on the Security Hub finding
 def create_ticket(jira_client, project_key, issuetype_name, account, region, description, resources, severity, title, id):
     digest = get_finding_digest(id)
-    title_digest = get_title_digest(title)
     
     title_parts = title.split(' - ', 1)
     cve = title_parts[0].strip() if len(title_parts) > 0 else "UNKNOWN"
     short_description = title_parts[1].strip() if len(title_parts) > 1 else title
+    # IMPORTANT: compute title digest from the normalized short description (not full title)
+    title_digest = get_title_digest(short_description)
 
     finding_link = "https://{0}.console.aws.amazon.com/securityhub/home?region={0}#/findings?search=Id%3D%255Coperator%255C%253AEQUALS%255C%253A{1}".format(
             region, id)

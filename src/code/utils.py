@@ -239,11 +239,11 @@ def update_subtask_resources(jira_client, subtask, new_resources, finding_id_tex
     """
     try:
         # Add a comment with the new resources
+        resources_str = new_resources if isinstance(new_resources, str) else ", ".join(new_resources or [])
         comment = """ *New Resources Detected*
         Resources: {}
-        
         FindingId: {}
-        """.format(new_resources, finding_id_text)
+        """.format(resources_str, finding_id_text)
         
         jira_client.add_comment(subtask, comment)
         logger.info("Updated subtask {} with new resources".format(subtask))
@@ -251,10 +251,22 @@ def update_subtask_resources(jira_client, subtask, new_resources, finding_id_tex
         logger.error("Failed to update subtask resources: {}".format(e))
 
 
+def add_resources_comment(jira_client, issue, resources, finding_id_text):
+    try:
+        resources_str = resources if isinstance(resources, str) else ", ".join(resources or [])
+        comment = """ *Affected Resources*
+        Resources: {}
+        FindingId: {}
+        """.format(resources_str, finding_id_text)
+        jira_client.add_comment(issue, comment)
+    except Exception as e:
+        logger.error("Failed to add resources comment: {}".format(e))
+
+
 # creates ticket based on the Security Hub finding
 def create_ticket(jira_client, project_key, issuetype_name, account, region, description, resources, severity, title, id):
     digest = get_finding_digest(id)
-    
+
     title_parts = title.split(' - ', 1)
     cve = title_parts[0].strip() if len(title_parts) > 0 else "UNKNOWN"
     short_description = title_parts[1].strip() if len(title_parts) > 1 else title
@@ -334,8 +346,8 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
         if not has_cve:
             # Create a standalone parent with all details when no CVE part is present
             parent_dict = {
-                "project": {"key": project_key},
-                "issuetype": {"name": issuetype_name},  
+            "project": {"key": project_key},
+            "issuetype": {"name": issuetype_name},  
                 "summary": "{} ({})".format(short_description, account),
                 "labels": ["security-finding", "title-{}".format(title_digest), "no-cve", "severity-{}".format((severity or '').lower())],
                 "priority": {"name": map_severity_to_priority_name(severity)},
@@ -393,6 +405,8 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                 subtask_dict["issuetype"] = {"name": "Sub-task"}
                 subtask = jira_client.create_issue(fields=subtask_dict)
             logger.info("Successfully created CVE subtask {} for new parent {}".format(subtask, parent_issue))
+            # Add resources comment after creation
+            add_resources_comment(jira_client, subtask, resources, finding_id_text)
             return str(subtask)
         except Exception as e:
             logger.error("Failed to create CVE subtask for {}: {}".format(cve, e), exc_info=True)
@@ -429,22 +443,22 @@ def comment_with_new_resources(jira_client, issue, account, region, description,
 
 def update_securityhub(securityhub_client, id, product_arn, status, note):
     try:
-        response = securityhub_client.batch_update_findings(
-                FindingIdentifiers=[
-                    {'Id':  id,
-                     'ProductArn': product_arn
-                     }],
-                Workflow={'Status': status}, Note={
-                        'Text': note,
-                        'UpdatedBy': 'security-hub-integration'
-                })
-        if response.get('FailedFindings'):
-            for element in response['FailedFindings']:
-                logger.error("Update error - FindingId {0}".format(element["Id"]))
-                logger.error(
-                        "Update error - ErrorCode {0}".format(element["ErrorCode"]))
-                logger.error(
-                        "Update error - ErrorMessage {0}".format(element["ErrorMessage"]))
+    response = securityhub_client.batch_update_findings(
+            FindingIdentifiers=[
+                {'Id':  id,
+                 'ProductArn': product_arn
+                 }],
+            Workflow={'Status': status}, Note={
+                    'Text': note,
+                    'UpdatedBy': 'security-hub-integration'
+            })
+    if response.get('FailedFindings'):
+        for element in response['FailedFindings']:
+            logger.error("Update error - FindingId {0}".format(element["Id"]))
+            logger.error(
+                    "Update error - ErrorCode {0}".format(element["ErrorCode"]))
+            logger.error(
+                    "Update error - ErrorMessage {0}".format(element["ErrorMessage"]))
         return response
     except ClientError as e:
         code = e.response.get('Error', {}).get('Code')
@@ -464,7 +478,7 @@ def is_closed(jira_client, issue):
 def reopen_jira_issue(jira_client, issue):
     """Reopen a closed JIRA issue."""
     try:
-        jira_client.transition_issue(issue, 'Reopen')
+    jira_client.transition_issue(issue, 'Reopen')
         logger.info("Reopened issue {}".format(issue))
     except Exception as e:
         logger.warning("Failed to reopen issue {}: {}".format(issue, e))

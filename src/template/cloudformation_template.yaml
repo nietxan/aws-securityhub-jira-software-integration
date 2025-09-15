@@ -281,7 +281,7 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub securityhub-jira-findings-${Environment}
-      VisibilityTimeout: 900
+      VisibilityTimeout: 300
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt FindingsQueueDLQ.Arn
         maxReceiveCount: 5
@@ -356,6 +356,7 @@ Resources:
           - Arn
       Runtime: python3.12
       Timeout: 900
+      ReservedConcurrentExecutions: 2
       Code: ../../dist/lambda.zip
       Environment:
         Variables:
@@ -364,15 +365,17 @@ Resources:
           JIRA_ISSUETYPE: !Ref JIRAIssueType
           JIRA_PROJECT_KEY: !Ref JIRAProjectKey
           FINDINGS_QUEUE_URL: !Ref FindingsQueue
+          BATCH_MAX_BATCHES: "400"
+          BATCH_TIME_BUDGET_SECONDS: "840"
 
   BatchSchedule:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub securityhub-jira-batch-${Environment}
-      ScheduleExpression: "rate(30 minutes)"
+      ScheduleExpression: "rate(5 minutes)"
       FlexibleTimeWindow:
         Mode: FLEXIBLE
-        MaximumWindowInMinutes: 5
+        MaximumWindowInMinutes: 1
       Target:
         Arn: !GetAtt BatchProcessorFunction.Arn
         RoleArn: !GetAtt SchedulerInvokeRole.Arn

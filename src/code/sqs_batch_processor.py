@@ -22,14 +22,18 @@ def backoff_sleep(attempt: int, retry_after: float | None = None):
     time.sleep(delay)
 
 
-def drain_messages(queue_url: str, max_batches: int = 30):
+def drain_messages(queue_url: str, max_batches: int = None, time_budget_s: int = None):
     batches = 0
+    start = time.time()
     while batches < max_batches:
+        if time_budget_s is not None and (time.time() - start) >= time_budget_s:
+            logger.info("Time budget reached, stopping drain")
+            break
         resp = sqs.receive_message(
             QueueUrl=queue_url,
             MaxNumberOfMessages=10,
-            WaitTimeSeconds=10,
-            VisibilityTimeout=120,
+            WaitTimeSeconds=5,
+            VisibilityTimeout=60,
         )
         messages = resp.get('Messages', [])
         if not messages:
@@ -82,7 +86,9 @@ def lambda_handler(event, context):
     total_deleted = 0
     total_retried = 0
     total_dropped = 0
-    for messages in drain_messages(queue_url):
+    max_batches = int(os.environ.get('BATCH_MAX_BATCHES', '200'))
+    time_budget = int(os.environ.get('BATCH_TIME_BUDGET_SECONDS', '840'))
+    for messages in drain_messages(queue_url, max_batches=max_batches, time_budget_s=time_budget):
         entries_to_delete = []
         for m in messages:
             body = json.loads(m['Body'])

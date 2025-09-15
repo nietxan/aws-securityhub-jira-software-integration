@@ -321,10 +321,9 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
             "labels": ["security-finding", "title-{}".format(title_digest), "grouped-finding"],
             "priority": {"name": map_severity_to_priority_name(severity)},
             "description": """ *Security Finding Group*
-            This is a grouped issue for the security finding: {}
             
             Multiple CVEs may be associated with this finding type.
-            Check subtasks for specific CVE details and affected accounts.
+            Check subtasks for specific CVE details and affected resources.
             """
         }
         parent_issue = jira_client.create_issue(fields=parent_dict)
@@ -336,8 +335,8 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                 "project": {"key": project_key},
                 "issuetype": {"name": "Subtask"},
                 "parent": {"key": str(parent_issue)},
-                "summary": "CVE: {} - Account: {}".format(cve, account),
-                "labels": ["cve", "cve-{}".format(cve.lower()), "account-{}".format(account), "severity-{}".format(severity.lower())],
+                "summary": "{} - Account: {}".format(cve, account),
+                "labels": ["{}".format(cve.lower()), "account-{}".format(account), "severity-{}".format(severity.lower())],
                 "priority": {"name": map_severity_to_priority_name(severity)},
                 "description": """ *CVE Details*
                 CVE: {}

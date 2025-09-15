@@ -126,47 +126,25 @@ def create_jira_ticket(jira_client: JIRA, project_key: str, issuetype_name: str,
     Returns:
         JIRA issue key
     """
-    # Group by title: if an issue with the same title label exists, comment instead of creating a duplicate
-    existing_issue = utils.get_jira_issue_by_title(jira_client, project_key, issuetype_name, finding_data.title)
-
-    if existing_issue:
-        utils.comment_with_new_resources(
-            jira_client,
-            existing_issue,
-            finding_data.account,
-            finding_data.region or os.environ['AWS_REGION'],
-            finding_data.description,
-            finding_data.resources,
-            finding_data.severity,
-            finding_data.title,
-            finding_data.finding_id,
-        )
-
-        utils.update_securityhub(
-                securityhub, finding_data.finding_id, finding_data.product_arn,
-                "NOTIFIED", f'JIRA Ticket (grouped): {existing_issue}')
-
-        try:
-            utils.update_jira_assignee(jira_client, existing_issue, finding_data.account)
-        except Exception:
-            logger.debug("Assignee update skipped for grouped issue")
-
-        return str(existing_issue)
-
     resources_str = "Resources: %s" % finding_data.resources if not "default" in finding_data.product_arn else ""
 
-    new_issue = utils.create_ticket(
+    # Create ticket using the new parent/subtask grouping logic
+    issue_key = utils.create_ticket(
             jira_client, project_key, issuetype_name, finding_data.account,
             finding_data.region or os.environ['AWS_REGION'], finding_data.description,
             resources_str, finding_data.severity, finding_data.title, finding_data.finding_id)
 
-    utils.update_securityhub(
-            securityhub, finding_data.finding_id, finding_data.product_arn,
-            "NOTIFIED", f'JIRA Ticket: {new_issue}')
+    if issue_key:
+        utils.update_securityhub(
+                securityhub, finding_data.finding_id, finding_data.product_arn,
+                "NOTIFIED", f'JIRA Ticket: {issue_key}')
 
-    utils.update_jira_assignee(jira_client, new_issue, finding_data.account)
+        try:
+            utils.update_jira_assignee(jira_client, issue_key, finding_data.account)
+        except Exception as e:
+            logger.warning("Failed to assign JIRA issue to account owner: {}".format(e))
 
-    return new_issue
+    return issue_key
 
 
 def should_auto_create_ticket(finding_data: FindingData) -> bool:

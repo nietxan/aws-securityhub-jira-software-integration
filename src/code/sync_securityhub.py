@@ -20,6 +20,7 @@ def sync_finding_with_jira(jira_client: JIRA, ticket: Any, project_key: str,
                            issuetype_name: str) -> None:
     """
     Sync a single JIRA ticket with its corresponding Security Hub finding.
+    Updated to work with parent/subtask structure and simplified status handling.
 
     Args:
         jira_client: JIRA client instance
@@ -29,10 +30,19 @@ def sync_finding_with_jira(jira_client: JIRA, ticket: Any, project_key: str,
     """
     try:
         logger.info(f"Checking {ticket}")
-        finding_id = utils.get_finding_id_from(ticket)
-
-        if not finding_id:
-            logger.warning(f"Could not extract finding ID from ticket {ticket}")
+        
+        # Check if this is a subtask or parent issue
+        is_subtask = hasattr(ticket.fields, 'parent') and ticket.fields.parent is not None
+        
+        if is_subtask:
+            # For subtasks, get finding ID from description or labels
+            finding_id = utils.get_finding_id_from_subtask(ticket)
+            if not finding_id:
+                logger.warning(f"Could not extract finding ID from subtask {ticket}")
+                return
+        else:
+            # For parent issues, skip individual finding sync
+            logger.info(f"Skipping parent issue {ticket} - no individual finding to sync")
             return
 
         # Get the finding from Security Hub
@@ -42,39 +52,23 @@ def sync_finding_with_jira(jira_client: JIRA, ticket: Any, project_key: str,
             }]})
 
         if not results.get("Findings"):
-            raise UserWarning(f"aws-sec label found for {ticket} but couldn't find the related Security Hub finding")
+            logger.warning(f"Could not find Security Hub finding for {finding_id}")
+            return
 
         finding = results["Findings"][0]
         finding_status = finding["Workflow"]["Status"]
         product_arn = finding["ProductArn"]
         record_state = finding["RecordState"]
 
-        # Handle suppressed findings
-        if utils.is_suppressed(jira_client, ticket) and finding_status != "SUPPRESSED":
-            logger.info(f"Suppress {finding_id} based on {ticket}")
-            utils.update_securityhub(
-                    securityhub, finding_id, product_arn, "SUPPRESSED", f'JIRA Ticket: {ticket}')
-
-        # Handle closed findings
-        elif utils.is_closed(jira_client, ticket) and finding_status != "RESOLVED":
+        # Simplified status handling - just sync basic states
+        if record_state == "ARCHIVED" and finding_status != "RESOLVED":
             logger.info(f"Marking as resolved {finding_id} based on {ticket}")
-                utils.update_securityhub(
-                    securityhub, finding_id, product_arn, "RESOLVED", 'JIRA Ticket was resolved')
-
-        # Handle active findings that are not closed or suppressed
-        elif not utils.is_closed(jira_client, ticket) and not utils.is_suppressed(jira_client, ticket):
-            if record_state != "ARCHIVED" and finding_status != "NOTIFIED":
-                # Reopen if Security Hub finding is still ACTIVE but not NOTIFIED
-                logger.info(f"Reopen {finding_id} based on {ticket}")
-                utils.update_securityhub(
-                        securityhub, finding_id, product_arn, "NOTIFIED", f'JIRA Ticket: {ticket}')
-
-            elif record_state == "ARCHIVED" and finding_status != "RESOLVED":
-                # Close JIRA issue if Security Hub finding is ARCHIVED
-                logger.info(f"Closing {ticket} based on {finding_id} archived status")
-                utils.close_jira_issue(jira_client, ticket)
-                utils.update_securityhub(
-                        securityhub, finding_id, product_arn, "RESOLVED", f'Closed JIRA Ticket {ticket}')
+            utils.update_securityhub(
+                securityhub, finding_id, product_arn, "RESOLVED", f'JIRA Ticket {ticket} was resolved')
+        elif record_state == "ACTIVE" and finding_status != "NOTIFIED":
+            logger.info(f"Reopen {finding_id} based on {ticket}")
+            utils.update_securityhub(
+                securityhub, finding_id, product_arn, "NOTIFIED", f'JIRA Ticket: {ticket}')
 
     except UserWarning as e:
         logger.error(f"User warning for ticket {ticket}: {e}")
@@ -103,18 +97,25 @@ def lambda_handler(event: Optional[Any], context: Optional[Any]) -> None:
         # Get JIRA client
         jira_client = utils.get_jira_client(secretsmanager, jira_instance, jira_credentials)
 
-        # Get latest updated findings from JIRA
+        # Get latest updated findings from JIRA (both parent issues and subtasks)
         latest_tickets = utils.get_jira_latest_updated_findings(
                 jira_client, project_key, issuetype_name)
+        
+        # Also get subtasks
+        latest_subtasks = jira_client.search_issues(
+            'Project = {0} AND issuetype = "Subtask" AND updated >= -2w'.format(project_key), 
+            maxResults=False)
 
-        if not latest_tickets:
+        all_tickets = latest_tickets + latest_subtasks
+
+        if not all_tickets:
             logger.info("No recent JIRA tickets found to sync")
             return
 
-        logger.info(f"Syncing {len(latest_tickets)} JIRA tickets with Security Hub")
+        logger.info(f"Syncing {len(all_tickets)} JIRA tickets (parent issues and subtasks) with Security Hub")
 
         # Process each ticket
-        for ticket in latest_tickets:
+        for ticket in all_tickets:
             sync_finding_with_jira(jira_client, ticket, project_key, issuetype_name)
 
     except Exception as e:

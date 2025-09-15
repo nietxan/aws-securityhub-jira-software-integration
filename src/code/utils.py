@@ -112,6 +112,21 @@ def get_finding_id_from(jira_ticket):
     return matched.group(1) if matched and matched.group(1) else None
 
 
+def get_finding_id_from_subtask(jira_ticket):
+    """
+    Extract finding ID from subtask description or labels.
+    """
+    if jira_ticket is None or jira_ticket.fields.description is None:
+        logger.warning("The subtask or its description is None, cannot extract finding ID.")
+        return None
+
+    description = jira_ticket.fields.description
+    # Search for finding ID in subtask description
+    matched = re.search(
+            'Id%3D%255Coperator%255C%253AEQUALS%255C%253A([a-zA-Z0-9\\.\\-\\_\\:\\/]+)', description)
+    return matched.group(1) if matched and matched.group(1) else None
+
+
 def get_jira_client(secretsmanager_client,jira_instance,jira_credentials_secret):
     region = os.environ['AWS_REGION']
     jira_credentials = get_secret(secretsmanager_client, jira_credentials_secret, region)
@@ -154,7 +169,11 @@ def get_jira_issue_by_title(jira_client, project_key, issuetype_name, title):
     """
     Find an existing JIRA issue by normalized title label to enable grouping.
     """
-    title_digest = get_title_digest(title)
+    # Extract the short description part (after CVE - )
+    title_parts = title.split(' - ', 1)
+    short_description = title_parts[1].strip() if len(title_parts) > 1 else title
+    
+    title_digest = get_title_digest(short_description)
     jql = 'Project = {0} AND issuetype = "{1}" AND labels = title-{2}'.format(project_key, issuetype_name, title_digest)
     issues = jira_client.search_issues(jql)
     return issues[0] if len(issues) > 0 else None
@@ -167,62 +186,137 @@ def add_label_if_missing(jira_client, issue, label):
         issue.update(fields={"labels": labels})
 
 
+def get_existing_cve_subtask(jira_client, parent_issue, cve, account):
+    """
+    Check if a CVE subtask already exists for the given CVE and account under the parent issue.
+    """
+    try:
+        # Search for subtasks of the parent with matching CVE and account labels
+        jql = 'parent = {} AND labels = cve-{} AND labels = account-{}'.format(
+            str(parent_issue), cve.lower(), account)
+        subtasks = jira_client.search_issues(jql)
+        return subtasks[0] if len(subtasks) > 0 else None
+    except Exception as e:
+        logger.warning("Error searching for existing CVE subtask: {}".format(e))
+        return None
+
+
+def update_subtask_resources(jira_client, subtask, new_resources, finding_link):
+    """
+    Update an existing subtask with new resources and finding link.
+    """
+    try:
+        # Add a comment with the new resources
+        comment = """ *New Resources Detected*
+        Resources: {}
+        
+        [Link to Security Hub finding|{}]
+        """.format(new_resources, finding_link)
+        
+        jira_client.add_comment(subtask, comment)
+        logger.info("Updated subtask {} with new resources".format(subtask))
+    except Exception as e:
+        logger.error("Failed to update subtask resources: {}".format(e))
+
+
 # creates ticket based on the Security Hub finding
 def create_ticket(jira_client, project_key, issuetype_name, account, region, description, resources, severity, title, id):
     digest = get_finding_digest(id)
     title_digest = get_title_digest(title)
     
-    # Split title by ' - ' (with spaces) to extract CVE and description
-    logger.info("Original title: '{}'".format(title))
     title_parts = title.split(' - ', 1)
     cve = title_parts[0].strip() if len(title_parts) > 0 else "UNKNOWN"
     short_description = title_parts[1].strip() if len(title_parts) > 1 else title
-    logger.info("Split result - CVE: '{}', Description: '{}'".format(cve, short_description))
 
     finding_link = "https://{0}.console.aws.amazon.com/securityhub/home?region={0}#/findings?search=Id%3D%255Coperator%255C%253AEQUALS%255C%253A{1}".format(
             region, id)
     
-    # Create main issue
-    issue_dict = {
+    # Check if parent issue exists for this title
+    parent_issue = get_jira_issue_by_title(jira_client, project_key, issuetype_name, short_description)
+    
+    if parent_issue:
+        # Parent exists - check if CVE subtask already exists
+        logger.info("Found existing parent issue {} for title '{}', checking for existing CVE subtask".format(parent_issue, short_description))
+        
+        # Check if CVE subtask already exists
+        existing_cve_subtask = get_existing_cve_subtask(jira_client, parent_issue, cve, account)
+        
+        if existing_cve_subtask:
+            # Update existing subtask with new resources
+            logger.info("Found existing CVE subtask {} for CVE {}, updating resources".format(existing_cve_subtask, cve))
+            update_subtask_resources(jira_client, existing_cve_subtask, resources, finding_link)
+            return str(existing_cve_subtask)
+        else:
+            # Create new CVE subtask
+            try:
+                subtask_dict = {
+                    "project": {"key": project_key},
+                    "issuetype": {"name": "Subtask"},
+                    "parent": {"key": str(parent_issue)},
+                    "summary": "CVE: {} - Account: {}".format(cve, account),
+                    "labels": ["cve", "cve-{}".format(cve.lower()), "account-{}".format(account), "severity-{}".format(severity.lower())],
+                    "priority": {"name": severity.capitalize()},
+                    "description": """ *CVE Details*
+                    CVE: {}
+                    Account: {}
+                    Resources: {}
+                    
+                    {}
+                    
+                    [Link to Security Hub finding|{}]
+                    """.format(cve, account, resources, description, finding_link)
+                }
+                subtask = jira_client.create_issue(fields=subtask_dict)
+                logger.info("Successfully created CVE subtask {} for parent {}".format(subtask, parent_issue))
+                return str(subtask)
+            except Exception as e:
+                logger.error("Failed to create CVE subtask for {}: {}".format(cve, e), exc_info=True)
+                return None
+    else:
+        # No parent exists - create parent issue for this title
+        logger.info("No parent issue found for title '{}', creating parent issue".format(short_description))
+        
+        parent_dict = {
             "project": {"key": project_key},
             "issuetype": {"name": issuetype_name},  
-            "summary": "{} - {} ({})".format(cve, short_description, account),
-            "labels": ["security-finding", "finding-{}".format(digest), "title-{}".format(title_digest), "account-{}".format(account), "severity-{}".format(severity.lower())],
+            "summary": "{} - Security Finding Group".format(short_description),
+            "labels": ["security-finding", "title-{}".format(title_digest), "grouped-finding"],
             "priority": {"name": severity.capitalize()},
-            "description": """ *What is the problem?*
-            We detected a security finding within the AWS account {}.
-            {}
-
-            {}
-
-            [Link to Security Hub finding|{}] 
-            """.format(account, resources, description, finding_link)
-            }
-    new_issue = jira_client.create_issue(
-            fields=issue_dict)  # writes dict to jira
-    
-    # Create subtask for CVE if it looks like a CVE
-    logger.info("Checking CVE: '{}' - starts with CVE: {}".format(cve, cve.upper().startswith('CVE')))
-    if cve.upper().startswith('CVE'):
+            "description": """ *Security Finding Group*
+            This is a grouped issue for the security finding: {}
+            
+            Multiple CVEs may be associated with this finding type.
+            Check subtasks for specific CVE details and affected accounts.
+            """
+        }
+        parent_issue = jira_client.create_issue(fields=parent_dict)
+        logger.info("Created parent issue {} for title '{}'".format(parent_issue, short_description))
+        
+        # Now create the first CVE subtask
         try:
             subtask_dict = {
                 "project": {"key": project_key},
-                "issuetype": {"name": "Sub-task"},
-                "parent": {"key": str(new_issue)},
-                "summary": "CVE: {}".format(cve),
-                "labels": ["cve", "cve-{}".format(cve.lower())],
+                "issuetype": {"name": "Subtask"},
+                "parent": {"key": str(parent_issue)},
+                "summary": "CVE: {} - Account: {}".format(cve, account),
+                "labels": ["cve", "cve-{}".format(cve.lower()), "account-{}".format(account), "severity-{}".format(severity.lower())],
                 "priority": {"name": severity.capitalize()},
-                "description": "CVE reference: {}".format(cve)
+                "description": """ *CVE Details*
+                CVE: {}
+                Account: {}
+                Resources: {}
+                
+                {}
+                
+                [Link to Security Hub finding|{}]
+                """.format(cve, account, resources, description, finding_link)
             }
-            logger.info("Creating subtask with parent: {}".format(str(new_issue)))
             subtask = jira_client.create_issue(fields=subtask_dict)
-            logger.info("Successfully created subtask: {}".format(subtask))
+            logger.info("Successfully created CVE subtask {} for new parent {}".format(subtask, parent_issue))
+            return str(subtask)
         except Exception as e:
             logger.error("Failed to create CVE subtask for {}: {}".format(cve, e), exc_info=True)
-    else:
-        logger.info("Skipping subtask creation - CVE '{}' doesn't start with CVE-".format(cve))
-    
-    return new_issue
+            return str(parent_issue)
 
 
 def comment_with_new_resources(jira_client, issue, account, region, description, resources, severity, title, finding_id):
@@ -282,32 +376,27 @@ def update_securityhub(securityhub_client, id, product_arn, status, note):
 
 
 def is_closed(jira_client, issue):
-    return issue.fields.status.name == "Resolved"
-
-
-def is_suppressed(jira_client, issue):
-    return issue.fields.status.name == "Risk approved" or issue.fields.status.name == "Accepted false positive"
-
-
-def is_test_fix(jira_client, issue):
-    return issue.fields.status.name == "Test fix"
+    """Check if issue is in a closed/resolved state."""
+    closed_statuses = ["Resolved", "Closed", "Done"]
+    return issue.fields.status.name in closed_statuses
 
 
 def reopen_jira_issue(jira_client, issue):
-    jira_client.transition_issue(issue, 'Reopen')
+    """Reopen a closed JIRA issue."""
+    try:
+        jira_client.transition_issue(issue, 'Reopen')
+        logger.info("Reopened issue {}".format(issue))
+    except Exception as e:
+        logger.warning("Failed to reopen issue {}: {}".format(issue, e))
 
 
 def close_jira_issue(jira_client, issue):
-    status = issue.fields.status.name
-    if status in ["Open"]:
-        jira_client.transition_issue(issue, "Allocate for fix")
-    if status in ["Open", "Allocated for fix"]:
-        jira_client.transition_issue(issue, "Mark for testing")
-    if status in ["Open", "Allocated for fix", "Test fix"]:
+    """Close a JIRA issue."""
+    try:
         jira_client.transition_issue(issue, "Mark as resolved", comment="Resolved automatically by security-hub-integration")
-    else:
-        logger.error(
-                "Cannot transition issue {0} as it's either marked as closed, awaiting risk acceptance or as false positive".format(issue))
+        logger.info("Closed issue {}".format(issue))
+    except Exception as e:
+        logger.warning("Failed to close issue {}: {}".format(issue, e))
 
 
 def get_secret(client, secret_arn, region_name):

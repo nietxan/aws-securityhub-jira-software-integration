@@ -233,17 +233,17 @@ def get_existing_cve_subtask(jira_client, parent_issue, cve, account):
         return None
 
 
-def update_subtask_resources(jira_client, subtask, new_resources, finding_link):
+def update_subtask_resources(jira_client, subtask, new_resources, finding_id_text):
     """
-    Update an existing subtask with new resources and finding link.
+    Update an existing subtask with new resources reference.
     """
     try:
         # Add a comment with the new resources
         comment = """ *New Resources Detected*
         Resources: {}
         
-        [Link to Security Hub finding|{}]
-        """.format(new_resources, finding_link)
+        FindingId: {}
+        """.format(new_resources, finding_id_text)
         
         jira_client.add_comment(subtask, comment)
         logger.info("Updated subtask {} with new resources".format(subtask))
@@ -272,16 +272,14 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
         # If the title does not include a CVE, attach details to the parent and return
         if not has_cve:
             try:
-                resources_str = resources if isinstance(resources, str) else ", ".join(resources or [])
                 comment = (
                     "New occurrence (no CVE).\n"
                     "Title: {0}\n"
                     "Account: {1}\n"
                     "Severity: {2}\n"
-                    "Resources: {3}\n\n"
-                    "Description: {4}\n"
-                    "FindingId: {5}"
-                ).format(short_description, account, severity, resources_str, description, finding_id_text)
+                    "Description: {3}\n"
+                    "FindingId: {4}"
+                ).format(short_description, account, severity, description, finding_id_text)
                 jira_client.add_comment(parent_issue, comment)
                 add_label_if_missing(jira_client, parent_issue, "no-cve")
                 return str(parent_issue)
@@ -297,7 +295,7 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
         if existing_cve_subtask:
             # Update existing subtask with new resources
             logger.info("Found existing CVE subtask {} for CVE {}, updating resources".format(existing_cve_subtask, cve))
-            update_subtask_resources(jira_client, existing_cve_subtask, resources, finding_link)
+            update_subtask_resources(jira_client, existing_cve_subtask, resources, finding_id_text)
             return str(existing_cve_subtask)
         else:
             # Create new CVE subtask
@@ -312,12 +310,11 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                     "description": """ *CVE Details*
                     CVE: {}
                     Account: {}
-                    Resources: {}
                     
                     {}
                     
                     FindingId: {}
-                    """.format(cve, account, resources, description, finding_id_text)
+                    """.format(cve, account, description, finding_id_text)
                 }
                 try:
                     subtask = jira_client.create_issue(fields=subtask_dict)
@@ -384,12 +381,11 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                 "description": """ *CVE Details*
                 CVE: {}
                 Account: {}
-                Resources: {}
                 
                 {}
                 
                 FindingId: {}
-                """.format(cve, account, resources, description, finding_id_text)
+                """.format(cve, account, description, finding_id_text)
             }
             try:
                 subtask = jira_client.create_issue(fields=subtask_dict)

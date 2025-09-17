@@ -316,8 +316,8 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                     "project": {"key": project_key},
                     "issuetype": {"name": "Subtask"},
                     "parent": {"key": str(parent_issue)},
-                    "summary": "CVE: {} - Account: {}".format(cve, account),
-                    "labels": ["cve", "cve-{}".format(cve.lower()), "account-{}".format(account), "severity-{}".format(severity.lower())],
+                    "summary": "{} - Account: {}".format(cve, account),
+                    "labels": ["{}".format(cve.lower()), "account-{}".format(account), "severity-{}".format(severity.lower())],
                     "priority": {"name": map_severity_to_priority_name(severity)},
                     "description": """ *CVE Details*
                     CVE: {}

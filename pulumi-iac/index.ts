@@ -39,6 +39,35 @@ const lambdaImportRole = new aws.iam.Role("LambdaImportRole", {
     },
 });
 
+// SQS queue to buffer findings for batch processing
+const findingsQueue = new aws.sqs.Queue("FindingsQueue", {
+    name: `securityhub-jira-findings-${environment}`,
+    visibilityTimeoutSeconds: 300,
+});
+
+// Queue resource policy (matches CloudFormation template semantics)
+new aws.sqs.QueuePolicy("QueueAccessPolicy", {
+    queueUrl: findingsQueue.url,
+    policy: pulumi.all([findingsQueue.arn]).apply(([queueArn]) => JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [
+            {
+                Effect: "Allow",
+                Principal: { Service: "lambda.amazonaws.com" },
+                Action: [
+                    "sqs:SendMessage",
+                    "sqs:SendMessageBatch",
+                    "sqs:ReceiveMessage",
+                    "sqs:DeleteMessage",
+                    "sqs:DeleteMessageBatch",
+                    "sqs:GetQueueAttributes",
+                ],
+                Resource: queueArn,
+            },
+        ],
+    })),
+});
+
 // Attach a policy to the Lambda import role.
 new aws.iam.RolePolicy("LambdaImportRolePolicy", {
     role: lambdaImportRole.id,
@@ -63,6 +92,15 @@ new aws.iam.RolePolicy("LambdaImportRolePolicy", {
                 ],
                 Effect: "Allow",
                 Resource: "*",
+            },
+            {
+                Action: [
+                    "sqs:SendMessage",
+                    "sqs:SendMessageBatch",
+                    "sqs:GetQueueAttributes",
+                ],
+                Effect: "Allow",
+                Resource: findingsQueue.arn,
             },
             {
                 Action: "sts:AssumeRole",
@@ -141,7 +179,7 @@ new aws.iam.RolePolicy("LambdaRefreshRolePolicy", {
 const jiraSecHubFunction = new aws.lambda.Function("JIRASecHubFunction", {
     functionName: `securityhub-jira-lambda-import-${environment}`,
     description: "Lambda integrates Security Hub to JIRA",
-    runtime: aws.lambda.Runtime.Python3d11,
+    runtime: aws.lambda.Runtime.Python3d12,
     handler: "security_hub_integration.lambda_handler",
     role: lambdaImportRole.arn,
     timeout: 300,
@@ -158,6 +196,7 @@ const jiraSecHubFunction = new aws.lambda.Function("JIRASecHubFunction", {
             JIRA_ISSUETYPE: jiraIssueType,
             JIRA_PROJECT_KEY: jiraProjectKey,
             JIRA_INSTANCE: jiraInstance,
+            FINDINGS_QUEUE_URL: findingsQueue.url,
         },
     },
 });
@@ -166,7 +205,7 @@ const jiraSecHubFunction = new aws.lambda.Function("JIRASecHubFunction", {
 const refreshJiraSecHubFunction = new aws.lambda.Function("RefreshJIRASecHubFunction", {
     functionName: `securityhub-jira-refresh-${environment}`,
     description: "Update findings in Security Hub according to JIRA changes",
-    runtime: aws.lambda.Runtime.Python3d11,
+    runtime: aws.lambda.Runtime.Python3d12,
     handler: "sync_securityhub.lambda_handler",
     role: lambdaRefreshRole.arn,
     timeout: 300,
@@ -183,33 +222,59 @@ const refreshJiraSecHubFunction = new aws.lambda.Function("RefreshJIRASecHubFunc
     },
 });
 
-// Create a CloudWatch Events rule to trigger the JIRA Security Hub function.
-const jiraSecHubCwRule = new aws.cloudwatch.EventRule("JIRASecHubCWRule", {
-    name: `securityhub-change-status-${environment}`,
-    description: "This CW rule helps keep Security Hub in sync with JIRA updates",
+// EventBridge rule (Legacy) - route only HIGH/CRITICAL legacy findings
+const jiraSecHubCwRuleLegacy = new aws.cloudwatch.EventRule("JIRASecHubCWRuleLegacy", {
+    name: `securityhub-change-status-legacy-${environment}`,
+    description: "This rule routes only HIGH/CRITICAL legacy Security Hub findings to Lambda",
     eventPattern: JSON.stringify({
-        "source": [
-            "aws.securityhub"
-        ],
+        source: ["aws.securityhub"],
         "detail-type": [
             "Security Hub Findings - Custom Action",
-            "Security Hub Findings - Imported"
-        ]
+            "Security Hub Findings - Imported",
+        ],
+        detail: {
+            findings: {
+                Severity: {
+                    Label: ["HIGH", "CRITICAL"],
+                },
+            },
+        },
     }),
 });
-
-// Create a CloudWatch Events target for the JIRA Security Hub function.
-new aws.cloudwatch.EventTarget("JIRASecHubCWTarget", {
-    rule: jiraSecHubCwRule.name,
+new aws.cloudwatch.EventTarget("JIRASecHubCWTargetLegacy", {
+    rule: jiraSecHubCwRuleLegacy.name,
     arn: jiraSecHubFunction.arn,
 });
-
-// Grant the CloudWatch Events rule permission to invoke the Lambda function.
-new aws.lambda.Permission("PermissionForEventsToInvokeIntegrationLambda", {
+new aws.lambda.Permission("PermissionForEventsToInvokeIntegrationLambdaLegacy", {
     action: "lambda:InvokeFunction",
     function: jiraSecHubFunction.name,
     principal: "events.amazonaws.com",
-    sourceArn: jiraSecHubCwRule.arn,
+    sourceArn: jiraSecHubCwRuleLegacy.arn,
+});
+
+// EventBridge rule (V2) - Findings Imported V2 for High/Critical
+const jiraSecHubCwRuleV2 = new aws.cloudwatch.EventRule("JIRASecHubCWRuleV2", {
+    name: `securityhub-change-status-v2-${environment}`,
+    description: "This rule routes only High/Critical Findings Imported V2 to Lambda",
+    eventPattern: JSON.stringify({
+        source: ["aws.securityhub"],
+        "detail-type": ["Findings Imported V2"],
+        detail: {
+            findings: {
+                severity: ["High", "Critical"],
+            },
+        },
+    }),
+});
+new aws.cloudwatch.EventTarget("JIRASecHubCWTargetV2", {
+    rule: jiraSecHubCwRuleV2.name,
+    arn: jiraSecHubFunction.arn,
+});
+new aws.lambda.Permission("PermissionForEventsToInvokeIntegrationLambdaV2", {
+    action: "lambda:InvokeFunction",
+    function: jiraSecHubFunction.name,
+    principal: "events.amazonaws.com",
+    sourceArn: jiraSecHubCwRuleV2.arn,
 });
 
 // Create a CloudWatch Events rule to trigger the refresh JIRA Security Hub function.
@@ -275,4 +340,111 @@ new aws.cloudwatch.MetricAlarm("CloudWatchAlarmRefresh", {
     threshold: 1,
     comparisonOperator: "GreaterThanThreshold",
     treatMissingData: "notBreaching",
+});
+
+// Batch Processor IAM role
+const batchProcessorRole = new aws.iam.Role("BatchProcessorRole", {
+    description: "Lambda role for batch processing findings from SQS to JIRA",
+    assumeRolePolicy: {
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Principal: { Service: "lambda.amazonaws.com" },
+            Action: "sts:AssumeRole",
+        }],
+    },
+});
+
+new aws.iam.RolePolicy("BatchProcessorRolePolicy", {
+    role: batchProcessorRole.id,
+    policy: pulumi.all([findingsQueue.arn, jiraApiTokenSecret.arn]).apply(([queueArn, secretArn]) => JSON.stringify({
+        Statement: [
+            {
+                Effect: "Allow",
+                Action: [
+                    "sqs:ReceiveMessage",
+                    "sqs:DeleteMessage",
+                    "sqs:DeleteMessageBatch",
+                    "sqs:GetQueueAttributes",
+                ],
+                Resource: queueArn,
+            },
+            {
+                Effect: "Allow",
+                Action: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+                Resource: "*",
+            },
+            {
+                Effect: "Allow",
+                Action: [
+                    "secretsmanager:GetResourcePolicy",
+                    "secretsmanager:GetSecretValue",
+                    "secretsmanager:DescribeSecret",
+                    "secretsmanager:ListSecretVersionIds",
+                ],
+                Resource: secretArn,
+            },
+        ],
+        Version: "2012-10-17",
+    })),
+});
+
+// Batch Processor Lambda
+const batchProcessorFunction = new aws.lambda.Function("BatchProcessorFunction", {
+    functionName: `securityhub-jira-batch-${environment}`,
+    description: "Drain SQS and create/update JIRA tickets with rate-limit backoff",
+    handler: "sqs_batch_processor.lambda_handler",
+    role: batchProcessorRole.arn,
+    runtime: aws.lambda.Runtime.Python3d12,
+    timeout: 900,
+    reservedConcurrentExecutions: 2,
+    code: new pulumi.asset.AssetArchive({
+        ".": new pulumi.asset.FileArchive("../src/code"),
+    }),
+    environment: {
+        variables: {
+            JIRA_API_TOKEN: jiraApiTokenSecret.id,
+            JIRA_INSTANCE: jiraInstance,
+            JIRA_ISSUETYPE: jiraIssueType,
+            JIRA_PROJECT_KEY: jiraProjectKey,
+            FINDINGS_QUEUE_URL: findingsQueue.url,
+            BATCH_MAX_BATCHES: "400",
+            BATCH_TIME_BUDGET_SECONDS: "840",
+        },
+    },
+});
+
+// Scheduler role to invoke batch processor
+const schedulerInvokeRole = new aws.iam.Role("SchedulerInvokeRole", {
+    assumeRolePolicy: {
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Principal: { Service: "scheduler.amazonaws.com" },
+            Action: "sts:AssumeRole",
+        }],
+    },
+});
+
+new aws.iam.RolePolicy("SchedulerInvokeRolePolicy", {
+    role: schedulerInvokeRole.id,
+    policy: batchProcessorFunction.arn.apply((arn) => JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Action: "lambda:InvokeFunction",
+            Resource: arn,
+        }],
+    })),
+});
+
+// EventBridge Scheduler schedule to invoke the batch processor every 5 minutes
+new aws.scheduler.Schedule("BatchSchedule", {
+    name: `securityhub-jira-batch-${environment}`,
+    scheduleExpression: "rate(5 minutes)",
+    flexibleTimeWindow: { mode: "FLEXIBLE", maximumWindowInMinutes: 1 },
+    target: {
+        arn: batchProcessorFunction.arn,
+        roleArn: schedulerInvokeRole.arn,
+    },
 });

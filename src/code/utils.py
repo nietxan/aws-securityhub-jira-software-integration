@@ -252,15 +252,41 @@ def update_subtask_resources(jira_client, subtask, new_resources, finding_id_tex
 
 
 def add_resources_comment(jira_client, issue, resources, finding_id_text):
+    """
+    Append a structured comment that lists affected resources and the FindingId.
+    Includes defensive logging and guards for size/format.
+    """
     try:
-        resources_str = resources if isinstance(resources, str) else ", ".join(resources or [])
+        if issue is None:
+            logger.warning("add_resources_comment called with issue=None")
+            return
+
+        # Normalize resources into a concise string
+        if isinstance(resources, str):
+            resources_str = resources
+        else:
+            try:
+                resources_list = list(resources or [])
+            except TypeError:
+                resources_list = []
+            # Limit excessively large lists to avoid very long comments
+            max_items = int(os.environ.get('JIRA_RESOURCES_COMMENT_MAX_ITEMS', '50'))
+            trimmed = resources_list[:max_items]
+            suffix = '' if len(resources_list) <= max_items else f" (+{len(resources_list) - max_items} more)"
+            resources_str = ", ".join(map(str, trimmed)) + suffix
+
         comment = """ *Affected Resources*
         Resources: {}
         FindingId: {}
         """.format(resources_str, finding_id_text)
+
+        logger.info("Adding resources comment to issue %s: %s chars, items~%s", issue, len(comment), len(resources_str.split(', ')) if resources_str else 0)
         jira_client.add_comment(issue, comment)
+    except JIRAError as je:
+        logger.error("JIRA error adding resources comment to %s: %s", issue, je, exc_info=True)
+        raise
     except Exception as e:
-        logger.error("Failed to add resources comment: {}".format(e))
+        logger.error("Unexpected error adding resources comment to %s: %s", issue, e, exc_info=True)
 
 
 # creates ticket based on the Security Hub finding
@@ -405,8 +431,13 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                 subtask_dict["issuetype"] = {"name": "Sub-task"}
                 subtask = jira_client.create_issue(fields=subtask_dict)
             logger.info("Successfully created CVE subtask {} for new parent {}".format(subtask, parent_issue))
-            # Add resources comment after creation
-            add_resources_comment(jira_client, subtask, resources, finding_id_text)
+            # Add resources comment after creation with defensive logging
+            try:
+                add_resources_comment(jira_client, subtask, resources, finding_id_text)
+            except JIRAError as je:
+                logger.error("JIRA error adding resources comment for subtask %s: %s", subtask, je, exc_info=True)
+            except Exception as e:
+                logger.error("Unexpected error adding resources comment for subtask %s: %s", subtask, e, exc_info=True)
             return str(subtask)
         except Exception as e:
             logger.error("Failed to create CVE subtask for {}: {}".format(cve, e), exc_info=True)

@@ -271,20 +271,11 @@ Resources:
           JIRA_ISSUETYPE: !Ref JIRAIssueType
           JIRA_PROJECT_KEY: !Ref JIRAProjectKey
 
-  FindingsQueueDLQ:
-    Type: AWS::SQS::Queue
-    Properties:
-      QueueName: !Sub securityhub-jira-findings-dlq-${Environment}
-      MessageRetentionPeriod: 1209600
-
   FindingsQueue:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub securityhub-jira-findings-${Environment}
       VisibilityTimeout: 300
-      RedrivePolicy:
-        deadLetterTargetArn: !GetAtt FindingsQueueDLQ.Arn
-        maxReceiveCount: 5
 
   QueueAccessPolicy:
     Type: AWS::SQS::QueuePolicy

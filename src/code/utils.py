@@ -343,7 +343,7 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                     "issuetype": {"name": "Subtask"},
                     "parent": {"key": str(parent_issue)},
                     "summary": "{} - Account: {}".format(cve, account),
-                    "labels": ["{}".format(cve.lower()), "account-{}".format(account), "severity-{}".format(severity.lower())],
+                    "labels": ["cve-{}".format(cve.lower()), "account-{}".format(account), "severity-{}".format(severity.lower())],
                     "priority": {"name": map_severity_to_priority_name(severity)},
                     "description": """ *CVE Details*
                     CVE: {}
@@ -414,7 +414,7 @@ def create_ticket(jira_client, project_key, issuetype_name, account, region, des
                 "issuetype": {"name": "Subtask"},
                 "parent": {"key": str(parent_issue)},
                 "summary": "{} - Account: {}".format(cve, account),
-                "labels": ["{}".format(cve.lower()), "account-{}".format(account), "severity-{}".format(severity.lower())],
+                "labels": ["cve-{}".format(cve.lower()), "account-{}".format(account), "severity-{}".format(severity.lower())],
                 "priority": {"name": map_severity_to_priority_name(severity)},
                 "description": """ *CVE Details*
                 CVE: {}

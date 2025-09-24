@@ -8,7 +8,10 @@ import utils
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-logging.getLogger().addHandler(logging.StreamHandler())
+# Ensure root logger emits INFO so logs from utils.py are visible
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addHandler(logging.StreamHandler())
 
 sqs = boto3.client('sqs')
 secretsmanager = boto3.client('secretsmanager')
